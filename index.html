@@ -1870,7 +1870,15 @@ function detachSeats(){
     x.estate={name:L.name};x.landless=false;moved=true});
   if(moved&&typeof steadSync==='function')steadSync();
 }
-function render(){try{watchHd()}catch(e){}
+/* houses you married into while outlaws or a minor house swear to you, bound by marriage, the moment you are great */
+const wedWith=x=>!!x&&(!!x.wedTie||(x.ties||[]).some(t=>/ wed /.test(t)));
+function bindWedTies(){if(!H||rankOf()!=='great')return;
+  (H.minors||[]).forEach(x=>{
+    if(x.wedTie&&!x.liege&&!x.rebel){x.liege=YOU;x.loyal=true;x.courted=false;x.resentful=false;x.oath=null;delete x.wedTie;
+      H.log.push({cycle:H.cycle,text:`Now that your house is great, House ${x.name} swears to you, bound by marriage.`});(H.news=H.news||[]).push({t:`Now that your house is great, House ${x.name} swears to you, bound by marriage.`,tone:'good'})}
+    else if(x.liege===YOU&&!x.loyal&&wedWith(x)){x.loyal=true;x.courted=false;delete x.wedTie}
+  })}
+function render(){try{watchHd()}catch(e){}try{bindWedTies()}catch(e){}
   try{detachSeats()}catch(e){}
   settleTraining();
   if(H&&H.lands)syncMinors();
@@ -1908,6 +1916,8 @@ function houseView(){
 }
 function origLine(m){
   if(m.origin==='married'&&!m.from)return `Wed into House ${esc(H.house.name)}: a lowborn match, with no house behind them.`;
+  if(m.origin==='companion'&&m.enlisted)return `Enlisted into the company of House ${esc(H.house.name)} as a ${ENLIST_TIER[m.enlisted.tier].n.toLowerCase()}, ${seasonOf(m.enlisted.cycle)} of year ${yearOf(m.enlisted.cycle)}. No blood of the house.`;
+  if(m.baseborn){const p=mem(m.parents[0]);return `Born baseborn${p?' to '+esc(p.given):''}, of a night of carousing; a stranger brought the child to the house. In the line of succession after every trueborn heir.`}
   if(m.origin==='companion')return `A companion who threw in with House ${esc(H.house.name)} in its outlaw days. No blood of the house.`;
   if(m.origin==='married')return `Wed into House ${esc(H.house.name)} from House ${esc(m.from)} — a political match.`;
   if(m.origin==='adopted')return `Born of House ${esc(m.from)}, adopted into House ${esc(H.house.name)}.`;
@@ -1940,6 +1950,7 @@ function dossier(m){
   if(!m.dead&&m.onOp===H.cycle)pills.push('<span class="status young">On an operation this cycle</span>');
   if(young)pills.push(`<span class="status young">Too young for operations · of age in ${adultAge(m)-m.age}</span>`);
   if(m.bastard)pills.push('<span class="status kin">Bastard</span>');
+  if(m.baseborn)pills.push('<span class="status kin">Baseborn</span>');
   if(m.origin!=='born')pills.push(`<span class="status kin">${m.origin==='married'?'By marriage':'By adoption'}</span>`);
   const trainRow=(m,k)=>{
     if(m.dead||m.merc)return '';const n=queuedIn(m,k),top=m.st[k]+n,cost=nextTrainCost(m,k);
@@ -2041,7 +2052,7 @@ function treeView(){
     lines+=`<path class="blood" d="M${sx} ${sy} V${my} H${tx} V${b.y}"/>`;
   });
   L.units.forEach(u=>{if(u.ms.length===2){const a=pos[u.ms[0].id],b=pos[u.ms[1].id];lines+=`<line class="wed" x1="${a.x+CW}" y1="${a.y+CH/2}" x2="${b.x}" y2="${b.y+CH/2}"/>`}});
-  treeMembers().forEach(m=>{const p=pos[m.id];const tag=m.origin==='married'?'Wed in · House '+m.from:m.origin==='adopted'?'Adopted · House '+m.from:m.bastard?'Bastard':'';
+  treeMembers().forEach(m=>{const p=pos[m.id];const tag=m.origin==='married'?'Wed in · House '+m.from:m.origin==='adopted'?'Adopted · House '+m.from:m.bastard?'Bastard':m.baseborn?'Baseborn':'';
     nodes+=`<g class="node ${m.id===sel?'sel':''} ${m.dead?'dead':''} ${m.origin==='married'?'inlaw':''} ${m.origin==='adopted'?'ward':''}" data-sel="${m.id}" data-go="house" tabindex="0" role="button" aria-label="${esc(fullName(m))}, ${esc(m.title)}">
       <rect class="card" x="${p.x}" y="${p.y}" width="${CW}" height="${CH}" rx="3"/>
       <image href="${portraitURL(m)}" x="${p.x+6}" y="${p.y+6}" width="48" height="48" preserveAspectRatio="xMidYMid slice"/>
@@ -2513,6 +2524,7 @@ function minorAct(kind,id,arg){
   if(kind==='back'){backRebels(x);return}
   if(kind==='treat'){treatRebels(x);return}
   if(kind==='dissolve'){startMinorDiss(x);return}
+  if(kind==='estgrant'){grantEstateTo(x,arg);return}
   if(!canDeal(x))return;
   if(kind==='lands'){landUI=landUI===x.id?null:x.id;return}
   if(kind==='giveland'){giveLand(x,arg);return}
@@ -2591,7 +2603,17 @@ function landPanel(x){
   return `<span class="rebel feud" style="display:block"><b>Grant a land.</b> It keeps its tier and pays you half its income; their unrest eases, resentment ends, and they will not rise against you for a year.<span class="macts">${give}</span>
     <b>Take a land back.</b> It becomes your hold again; their unrest rises a step.<span class="macts">${take}</span></span>`;
 }
-function minorActs(x){const h=minorActsCore(x),bk=brokerBtns('m:'+x.id)+bTruceNote('m:'+x.id);return bk?h.replace(/<\/span>$/,bk+'</span>'):h}
+/* a resentful house not sworn to you may be granted one of your Estates: it becomes their seat (or a hold, if they have one); the grudge is gone, allegiance unchanged */
+function estGrantBtns(x){if(!x||!x.resentful||x.rebel||x.liege===YOU)return '';const fe=freeEstates();
+  if(!fe.length)return `<button disabled title="Raise a castle to an Estate in your holdings first">Grant an Estate</button>`;
+  const full=x.estate&&mN(x)>=HOLD_CAP;return fe.map(L=>`<button data-minor="estgrant|${x.id}|${lk(L)}" ${full?'disabled title="They hold all they can"':`title="${x.estate?'It joins their lands as a hold':'It becomes their seat'}; the grudge is forgotten. They stay ${x.liege?'sworn to House '+esc(x.liege):'independent'}."`}>Grant ${esc(L.name)} Estate</button>`).join('')}
+function grantEstateTo(x,lid){const L=H.lands.find(l=>l.lid===lid&&l.tier==='Estate'&&!estateHeld(l)&&!estateClaimed(l));if(!x||!L||!x.resentful||x.rebel||x.liege===YOU)return;
+  if(x.estate&&mN(x)>=HOLD_CAP)return;
+  if(typeof refundBuild==='function')refundBuild(L,t=>H.log.push({cycle:H.cycle,text:t}));H.lands.splice(H.lands.indexOf(L),1);if(L.garrison&&H.army)L.garrison=false;
+  if(!x.estate){x.estate={name:L.name};x.landless=false}else mAdd(x,MT_ESTATE);x.resentful=false;
+  if(typeof steadSync==='function')steadSync();
+  H.log.push({cycle:H.cycle,text:`You grant ${L.name} Estate to House ${x.name}${x.estate.name===L.name?' as its new seat':''}. Their grudge is forgotten; they stay ${x.liege?'sworn to House '+x.liege:'independent'}.`})}
+function minorActs(x){const h0=minorActsCore(x),eg=estGrantBtns(x),h=eg?h0.replace(/<\/span>$/,eg+'</span>'):h0,bk=brokerBtns('m:'+x.id)+bTruceNote('m:'+x.id);return bk?h.replace(/<\/span>$/,bk+'</span>'):h}
 function minorActsCore(x){
   const why=minorRerollBlock(x),rr=`<button data-minor="reroll|${x.id}" ${why?`disabled title="${esc(why)}"`:'title="New name, sigil, words and species"'}>Reroll</button>`;
   if(!canDeal(x)){const bk=x.rebel&&x.liege&&!isLesser()?(x.rebel.backed?'<button disabled>Backed: they break away to you at season’s end</button>':`<button data-minor="back|${x.id}" ${H.gold>=backCost(x)?'':'disabled'} title="They break from House ${esc(x.liege)} at season’s end and swear to you. House ${esc(x.liege)} grows more hostile.">Back the rebels · ${backCost(x)}g</button>`):'';return `<span class="macts">${bk}${dissBtn(x)}${rr}</span>`}
@@ -3319,7 +3341,7 @@ function genBoardCore(){const t=SEASON_OP[seasonOf(H.cycle)];
     const ops=foes.length?foes.map((n,i)=>{const o=genOp(t,hos[i],n);o.war=true;return o}):[genOp(t,hos[0])];
     ops.push(genPeaceOp(t,pe[0]));
     if(ops.length<3)ops.push(Math.random()<.5?genOp(t,hos[1]):genPeaceOp(t,pe[1]));
-    if(t==='Conquest'){const i=ops.findIndex(o=>o.war&&swornTo(o.target).some(x=>x.estate));if(i>=0)ops[i]=estateOp(ops[i].target);
+    if(t==='Conquest'){/* storming a bannerman's Estate takes an ordinary place, never the war conquest of the enemy's own lands */const w=ops.find(o=>o.war&&swornTo(o.target).some(x=>x.estate));if(w){const j=ops.map((o,k)=>k).filter(k=>!ops[k].war);if(j.length)ops[j[j.length-1]]=estateOp(w.target)}
       /* an independent house's Estate takes the place of one ordinary operation */
       const ih=indieHolders(),slots=ops.map((o,j)=>j).filter(j=>!ops[j].war&&!ops[j].estate);
       if(ih.length&&slots.length)ops[pick(slots)]=indieEstateOp(pick(ih));
@@ -3331,7 +3353,7 @@ function genBoardCore(){const t=SEASON_OP[seasonOf(H.cycle)];
     const all=OPS.Intrigue.objs.filter(o=>!(isOutlaw()&&(o[1]==='marriage'||o[1]==='peace'))),tr=all.find(o=>o[1]==='route'),rest=shuffle(all.filter(o=>o!==tr)).slice(0,2);
     {let L=(H.rivals.some(r=>canTradeWith(r.name))?[tr]:[]).concat(rest).concat(H.rivals.some(r=>canTradeWith(r.name))?[]:[shuffle(all.filter(o=>o!==tr&&!rest.includes(o)))[0]]);
       return outlawWinter(hordeTribute(withSetOn(mixAllyOps(L.map(o=>genOp(t,o))))))}}
-  const objs=shuffle(OPS[t].objs).slice(0,3);if(t==='Conquest')objs.sort((a,b)=>a[1]-b[1]);return objs.map(o=>genOp(t,o))}
+  const objs=shuffle(t==='Espionage'?OPS[t].objs.concat([['Enlist a new companion','enlist']]):OPS[t].objs).slice(0,3);if(t==='Conquest')objs.sort((a,b)=>a[1]-b[1]);return objs.map(o=>o[1]==='enlist'?genEnlistOp():genOp(t,o))}
 function ensureState(){
   if(H.influence==null)H.influence=0;
   ['lands','captives','secrets','plans','pacts','offers','log'].forEach(k=>{if(!Array.isArray(H[k]))H[k]=[]});migrateLands();
@@ -3342,7 +3364,7 @@ function ensureState(){
   if(!H.ops.board.length&&!H.ops.underway.length&&H.ops.season!==H.cycle)H.ops.board=genBoard();
   if(H.ops.board.length>BOARD_MAX){const w=H.ops.board.filter(o=>o.war),rest=H.ops.board.filter(o=>!o.war);H.ops.board=w.concat(rest).slice(0,BOARD_MAX)}
   ensureRealm();
-  ensureDip();
+  ensureDip();ensureEnlist();
   ensureAllyState();
   ensureBlood();
   migrateItems();
@@ -3472,6 +3494,78 @@ function mercsLeave(ids,say){
   if(say)say(t+'.','');else H.log.push({cycle:H.cycle,text:'Sellswords: '+t+'.'});
   if(gone.some(m=>m.id===sel)){const ru=H.members.find(x=>x.ruler&&!x.dead);if(ru)sel=ru.id}
 }
+/* ---------- 5n: Enlist and Carouse. Recruits join the company for good; offers wait in Bloodlines until the next Spring ---------- */
+const ENLIST_TIER=[null,{n:'Green recruit',pts:20,price:0},{n:'Seasoned',pts:22,price:6},{n:'Veteran',pts:24,price:12,gear:'kit'},{n:'Champion',pts:26,price:25,gear:'heirloom'}];
+const ENLIST_STAGES=['Ask at the hiring fairs','Stand the drinks at the Broken Lance','Test them in the practice yard','Win over a free company’s captain','Sift the brawlers from the blades','Strike the bargain'];
+const CAROUSE_COST=5,CAROUSE_STEP=.15,CAROUSE_WAIT=3;
+function makeRecruit(t){
+  const T=ENLIST_TIER[t],sp=pick(SPECIES_KEYS),S=SPECIES[sp],sex=Math.random()<S.male?'m':'f',taken=new Set(H.members.map(x=>x.given));
+  let given,k=0;do{given=nameFor(sex,sp)}while(taken.has(given)&&++k<60);
+  const st={};STATS.forEach(x=>st[x]=2);const lean=pick(STATS);let left=T.pts-8;while(left>0){const x=Math.random()<.35?lean:pick(STATS);if(st[x]<10){st[x]++;left--}}enforcePrimary(st,sp);
+  const gear={weapon:'None',armor:'None',heirloom:'',specialty:''};
+  if(T.gear==='kit'){if(Math.random()<.5)gear.weapon=pick(WEAPONS.filter(w=>w[1]>=2&&PRICES.weapon[w[0]]).map(w=>w[0]));else gear.armor=pick(ARMORS.filter(w=>w[1]>=2).map(w=>w[0]))}
+  if(T.gear==='heirloom')gear.heirloom=pick(stockHeirlooms().filter(n=>n!=='Crown-shard'));
+  return {tier:t,given,sex,sp,age:toSpAge(ri(19,36),sp),st,gear,traits:traitsFor(sp),look:(Math.floor(Math.random()*4294967295)>>>0)||1};
+}
+const nextSpring=c=>{let u=c+1;while(seasonOf(u)!=='Spring')u++;return u};
+function ensureEnlist(){if(!Array.isArray(H.enlist))H.enlist=[];if(!Array.isArray(H.babies))H.babies=[];if(H.enlistId==null)H.enlistId=1}
+function addEnlistOffer(from){ensureEnlist();const o={id:H.enlistId++,from,cycle:H.cycle,until:nextSpring(H.cycle),roster:[1,2,3,4].map(makeRecruit)};H.enlist.push(o);return o}
+function takeRecruit(oid,i){
+  ensureEnlist();const o=H.enlist.find(x=>x.id===oid),c=o&&o.roster[i];if(!c)return;const T=ENLIST_TIER[c.tier];if(H.gold<T.price)return;
+  H.gold-=T.price;H.enlist=H.enlist.filter(x=>x!==o);
+  const m=Object.assign({},c,{id:H.nextId++,title:'Companion',origin:'companion',from:'',parents:[],spouse:null,ruler:false,wounds:0,dead:false,enlisted:{tier:c.tier,cycle:H.cycle}});
+  delete m.tier;m.kit=pick(KIT_BY[topStat(m.st)]);H.members.push(m);
+  H.log.push({cycle:H.cycle,text:`${m.given}, ${T.n.toLowerCase()==='green recruit'?'a green recruit':T.n==='Champion'?'a champion':'a '+T.n.toLowerCase()+' fighter'}, joins the company${T.price?` for ${T.price} gold`:''}.`});
+}
+function genEnlistOp(){const diff=ri(1,3);
+  return {id:H.ops.nextOp++,type:'Espionage',kind:'enlist',diff,target:null,peaceful:true,place:'The hiring halls and alehouses of the realm',title:'Enlist a new companion',stages:shuffle(ENLIST_STAGES).slice(0,diff+1).map(x=>({name:x,stat:'Ability'}))}}
+function finishEnlist(op,grade,out){
+  if(grade==='full'){addEnlistOffer('Enlist');out.push('Four would-be companions answer: a green recruit, a seasoned hand, a veteran and a champion. Take one in Bloodlines, under Enlistment offers, before next Spring');return}
+  if(grade==='partial'){H.influence++;out.push('+1 influence. Word of your company spreads, but no one worth the coin signs on');return}
+  out.push('No one worth the coin signs on.');
+}
+function makeBaseborn(p){
+  const other=pick(SPECIES_KEYS.filter(k=>p.sex!=='f'||k!=='Succubus')),succ=p.sp==='Succubus'||other==='Succubus';
+  let sp;if(succ){const father=p.sex==='m'?p.sp:other;sp=Math.random()<.5?'Succubus':father}else sp=Math.random()<.5?(p.sp||'Kin'):other;
+  const sex=sp==='Succubus'?'f':succ?(Math.random()<.5?'m':'f'):(Math.random()<SPECIES[sp].male?'m':'f'),taken=new Set(H.members.map(x=>x.given));
+  let given,t=0;do{given=nameFor(sex,sp)}while(taken.has(given)&&++t<60);
+  const st={};STATS.forEach(k=>st[k]=1);
+  const c={id:H.nextId++,given,sex,sp,age:0,title:'',origin:'born',baseborn:true,otherSp:other,from:'',parents:[p.id],spouse:null,ruler:false,st,wounds:0,dead:false,
+    gear:{weapon:'None',armor:'None',heirloom:'',specialty:''},traits:traitsFor(sp),look:(Math.floor(Math.random()*4294967295)>>>0)||1,born:H.cycle+1};
+  if(hasBoon(p,'cradle')){c.st[SPECIES[sp].primary]++;c.cradle=1}
+  c.kit=pick(KIT_BY[pick(STATS)]);H.members.push(c);return c;
+}
+const canCarouse=m=>!!m&&!m.dead&&!m.captive&&!m.merc&&!m.hostage&&!m.wedTo&&isAdult(m);
+function carouse(id){
+  const C=court(),m=mem(id);if(C.carouse||H.gold<CAROUSE_COST||!canCarouse(m))return;
+  H.gold-=CAROUSE_COST;C.carouse=true;ensureEnlist();
+  const t=m.st.Insight+gearBonus(m,'Insight')-1,roll=1+Math.floor(Math.random()*10),ok=roll===1||(roll!==10&&roll<=t);
+  m.carouse=Math.min(1,(m.carouse||0)+CAROUSE_STEP);H.babies.push({id:m.id,at:H.cycle+CAROUSE_WAIT});
+  const text=ok?`${m.given} carouses through the taverns (rolled ${roll} vs ${t}) and comes home with a crowd of would-be companions: a green recruit, a seasoned hand, a veteran and a champion. Take one in Bloodlines, under Enlistment offers.`
+    :`${m.given} carouses through the taverns (rolled ${roll} vs ${t}), and comes home with nothing but a sore head.`;
+  if(ok)addEnlistOffer('Carouse');C.carouseLast={text,ok};H.log.push({cycle:H.cycle,text:`5 gold spent carousing. ${text}`});render();
+}
+/* each season's end: offers made before last Spring move on; a carouser's past may come knocking */
+function enlistTurn(say){
+  ensureEnlist();const nx=H.cycle+1;
+  const gone=H.enlist.filter(o=>o.until<=nx);if(gone.length){H.enlist=H.enlist.filter(o=>o.until>nx);say(`With Spring, the recruits who waited on your word move on (${gone.length} offer${gone.length>1?'s lapse':' lapses'}).`,'')}
+  const due=H.babies.filter(b=>b.at<=nx);H.babies=H.babies.filter(b=>b.at>nx);
+  due.forEach(b=>{const m=mem(b.id);if(!m||m.dead||!(Math.random()<(m.carouse||0)))return;m.carouse=0;const c=makeBaseborn(m);
+    say(`A stranger comes to ${H.house.seat} with a baby in arms: ${c.given}, a ${spOf(c).name} ${c.sex==='m'?'son':'daughter'}, and ${m.given}'s by ${m.sex==='m'?'the mother':'the father'}'s word, from a night of carousing. The child is raised in the house, baseborn: in the line of succession after every trueborn heir.`,'warn')});
+}
+function enlistPane(){
+  ensureEnlist();
+  const rows=H.enlist.map(o=>`<h3 style="margin-bottom:4px">${o.from==='Carouse'?'Met while carousing':'Enlisted'} · ${seasonOf(o.cycle)}, year ${yearOf(o.cycle)}</h3><p class="muted" style="font-size:14px;margin:0 0 6px">They wait until Spring, year ${yearOf(o.until)}. Take one; the rest move on.</p><div class="suitors">${o.roster.map((c,i)=>{const T=ENLIST_TIER[c.tier],g=[c.gear.weapon!=='None'?`${esc(c.gear.weapon)} (+${wVal(c.gear.weapon)})`:'',c.gear.armor!=='None'?`${esc(c.gear.armor)} (+${aVal(c.gear.armor)} wounds)`:'',c.gear.heirloom?esc(c.gear.heirloom):''].filter(Boolean).join(' · ');
+    return `<div class="hcard" style="display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:4px 10px;align-items:center;padding:8px">${portrait(c,48)}<span style="min-width:0"><span class="sname">${esc(c.given)}<span class="tier">${T.n}</span></span><span class="sline">${spOf(c).name} · ${c.sex==='m'?'male':'female'} · ${c.age} · ${STATS.map(k=>`${k} ${c.st[k]}`).join(', ')}</span>${g?`<span class="sline">${g}</span>`:''}</span><button class="sm" style="margin:0;white-space:nowrap" data-recruit="${o.id}|${i}" ${H.gold>=T.price?'':'disabled'}>Take · ${T.price?T.price+' gold':'free'}</button></div>`}).join('')}</div>`).join('');
+  return `<section class="pane"><h2>Enlistment offers</h2><p class="muted" style="font-size:15px;margin:0 0 10px">A full success at Enlist (Spring, Espionage) or a good night of carousing (The Realm, Feasts) brings four would-be companions: a green recruit (free), a seasoned hand (6 gold), a veteran with a weapon or armour (12) and a champion with an heirloom (25). The one you take joins the company for good, among the Companions.</p>${rows||'<p class="muted" style="margin:0">None waiting.</p>'}</section>`;
+}
+function carouseHtml(){
+  const C=court(),who=H.members.filter(canCarouse).sort((a,b)=>(b.st.Insight+gearBonus(b,'Insight'))-(a.st.Insight+gearBonus(a,'Insight')));
+  const last=C.carouseLast?`<p class="rolled ${C.carouseLast.ok?'hit':'miss'}" role="status" style="margin:0 0 8px">${esc(C.carouseLast.text)}</p>`:'';
+  const body=C.carouse?'<p class="muted" style="margin:0">Someone has caroused this season.</p>':who.length?`<div style="display:flex;flex-wrap:wrap;gap:8px 12px;align-items:flex-end"><label class="fld" style="flex:1;min-width:12em"><span>Carouser</span><select id="carouser">${who.map(m=>`<option value="${m.id}">${esc(m.given)} · Insight ${m.st.Insight+gearBonus(m,'Insight')}${m.carouse?` · ${Math.round(m.carouse*100)}% a stranger calls`:''}</option>`).join('')}</select></label>
+      <button class="sm" style="margin:0" data-carouse="1" ${H.gold>=CAROUSE_COST?'':'disabled'}>Carouse · ${CAROUSE_COST} gold</button></div>`:'<p class="muted" style="margin:0">No one of age is free to carouse.</p>';
+  return `<h3>Carouse</h3>${last}${body}<p class="muted" style="font-size:15px;margin:8px 0 0">Once a season, and it uses no action: the carouser is still free for operations. They roll Insight at −1; success brings four would-be companions to Enlistment offers (Bloodlines). Each carouse adds 15% to that carouser's chance that, three seasons on, a stranger turns up with a baby they fathered or mothered; the chance resets once a child arrives.</p>`;
+}
 function hostPane(){
   ensureArmy();const A=H.army,cap=levyCap(),f=fieldLevies(),g=garrisoned(),ap=armyPower(),need=2-(f%2);
   const holds=units().sort((a,b)=>(b.unrest||0)-(a.unrest||0)||tierStep(b)-tierStep(a));
@@ -3480,8 +3574,7 @@ function hostPane(){
     <div class="tally" style="margin-bottom:8px"><div>In the field<b>${f}</b></div><div>Garrisoned<b>${g}</b></div>${lentN()?`<div>Lent out<b>${lentN()}</b></div>`:''}${borrowedN()?`<div>Borrowed<b>${borrowedN()}</b></div>`:''}<div>War strength<b>+${ap}</b></div><div>Upkeep<b>${upkeep()}</b></div></div>
     <p class="muted" style="font-size:15px;margin:0 0 10px">Every two companies in the field add +1 to your power in each season’s war clash, up to +3${ap<3?` (${need} more for +${ap+1})`:''}. A garrisoned hold falls into unrest a third as often, and raids on it strike one danger lower; a garrison drives off a low-danger raid on its own. A steading may garrison one company per hold: each eases its unrest, and with half or more garrisoned its raids strike one danger lower. Each company costs ${levyUpkeep()} gold a season. Companies you cannot pay desert. Your peasants can fill ${cap} companies.</p>
     <div class="acts" style="margin-bottom:10px"><button class="sm" data-levy="1" ${A.levies<cap&&H.gold>=levyCost()?'':'disabled'} ${A.levies>=cap?'title="Your peasants can fill no more companies"':''}>Raise a company · ${levyCost()} gold</button><button class="sm" data-levy="-1" ${ownField()?'':'disabled'}>Disband a company</button></div>
-    <h3>Garrisons</h3>${gl}
-    <p class="muted" style="font-size:15px;margin:10px 0 0">Sellsword captains are hired at the Market. Each fights in one operation this season, then leaves.</p></div></details></section>`;
+    <h3>Garrisons</h3>${gl}</div></details></section>`;
 }
 function genDefense(L,lvlOver){return withAid(genDefenseCore(L,lvlOver))}
 function genDefenseCore(L,lvlOver){
@@ -3624,6 +3717,7 @@ function raidLost(L,say,coId){
   else{L.unrest=(L.unrest||0)+1;steadSync();say(`The raiders hold sway in ${holdLabel(L)}. It falls into ${UNREST[L.unrest].toLowerCase()}.`,'bad')}
 }
 function peaceRewardText(op){
+  if(op.kind==='enlist')return 'Complete success: four would-be companions (green, seasoned, veteran, champion) wait in Bloodlines until next Spring; take one. Partial success: +1 influence';
   if(op.kind==='seatsiege')return `Hold ${op.place}: they are driven off and lose a pip of strength, with ${op.gold} gold in plunder (half on a partial success). <span class="hot">Fail, or leave it unanswered, and they take your seat and province: you fall from grace to an outlaw company</span>`;
   if(op.kind==='vquell')return `The revolt ends: they bend the knee again (content on a complete success, resentful on a partial). Fail, and you may try again next season`;
   if(op.kind==='quell')return `The revolt ends. Win, and they lose their Estate to you and are left landless and resentful (a partial win leaves the Estate restless). Fail, and you may try again next season`;
@@ -3641,6 +3735,7 @@ function finishPeace(ms,grade,out){
   if(op.kind==='seatsiege'){finishSeatSiege(op,grade,out);return}
   if(op.kind==='strike'){finishStrike(op,grade,out);return}
   if(op.kind==='seton'){finishSetOn(op,grade,out);return}
+  if(op.kind==='enlist'){finishEnlist(op,grade,out);return}
   if(op.kind==='rout'){const L=H.lands.find(l=>lk(l)===op.landName);
     if(grade==='fail'||!L){out.push(`The bandits slip away from ${op.place}. Nothing changes.`);return}
     L.unrest=0;steadSync();out.push(`The bandits are routed. ${holdLabel(L)[0].toUpperCase()+holdLabel(L).slice(1)} is at peace.`);return}
@@ -3747,6 +3842,7 @@ function rollStage(msId,memId){
     const r=rival(op.target);
     if(st.stat==='Might'){const wn=op.peaceful&&!op.siege?(op.kind==='tourney'||op.kind==='melee'?1:Math.max(1,op.diff-1+(roll===10?1:0)-Math.floor(aVal(m.gear.armor)/2))):Math.max(1,op.diff+(roll===10?1:0)-Math.floor(aVal(m.gear.armor)/2));note=woundIn(ms,m,wn)+'.'}
     else if(op.type==='Conquest'){note='The peasants will not bend.'}
+    else if(op.kind==='enlist'){note=roll===10?'A brawl breaks out in the hiring hall. '+woundIn(ms,m,1)+'.':'No one worth the coin answers.'}
     else if(op.type==='Espionage'){
       if(roll===10&&hasBoon(m,'mask'))note=m.given+' is cornered, but slips away behind the faceless mask. '+woundIn(ms,m,1)+'.';
       else if(roll===10){m.captive={house:op.target,ransom:8*op.diff+4};note=m.given+' is caught and taken captive by House '+op.target+'.'}
@@ -3993,7 +4089,7 @@ function endCycle(){
   const inc=cycleIncome();H.gold+=inc;trainingTurn();
   H.members.forEach(m=>{if(!m.dead&&m.wounds>0)m.wounds-=Math.min(m.wounds,hasBoon(m,'surgeon')?2:1)});
   H.log.push({cycle:H.cycle,text:`${seasonOf(H.cycle)} ends. Your holdings pay ${inc} gold. The wounded mend.`});
-  H.news=realmTurn();banditTurn((t,tone)=>H.news.push({t,tone}));boonTurn((t,tone)=>H.news.push({t,tone}));minorTurn((t,tone)=>H.news.push({t,tone}));outlawTurn((t,tone)=>H.news.push({t,tone}));coDealsTurn((t,tone)=>H.news.push({t,tone}));vassalTurn((t,tone)=>H.news.push({t,tone}));seatTurn((t,tone)=>H.news.push({t,tone}));aiVassalTurn((t,tone)=>H.news.push({t,tone}));aiRiseTurn((t,tone)=>H.news.push({t,tone}));minorLandTurn((t,tone)=>H.news.push({t,tone}));minorGrowTurn((t,tone)=>H.news.push({t,tone}));recruitTurn((t,tone)=>H.news.push({t,tone}));landHungerTurn((t,tone)=>H.news.push({t,tone}));liegeCareTurn((t,tone)=>H.news.push({t,tone}));legitTurn((t,tone)=>H.news.push({t,tone}));heirTurn((t,tone)=>H.news.push({t,tone}));contestTurn((t,tone)=>H.news.push({t,tone}));fallTurn((t,tone)=>H.news.push({t,tone}));capSweep((t,tone)=>H.news.push({t,tone}));armyTurn((t,tone)=>H.news.push({t,tone}));allyTurn((t,tone)=>H.news.push({t,tone}));plotTurn((t,tone)=>H.news.push({t,tone}));mercsLeave(null,(t,tone)=>H.news.push({t,tone}));if(seasonOf(H.cycle+1)==='Spring')informantTurn((t,tone)=>H.news.push({t,tone}));if(seasonOf(H.cycle+1)==='Winter')bloodlineTurn((t,tone)=>H.news.push({t,tone}));settleTraining();H.news.forEach(n=>H.log.push({cycle:H.cycle,text:n.t,realm:1}));if(H.log.length>80)H.log=H.log.slice(-80);
+  H.news=realmTurn();banditTurn((t,tone)=>H.news.push({t,tone}));boonTurn((t,tone)=>H.news.push({t,tone}));minorTurn((t,tone)=>H.news.push({t,tone}));outlawTurn((t,tone)=>H.news.push({t,tone}));coDealsTurn((t,tone)=>H.news.push({t,tone}));vassalTurn((t,tone)=>H.news.push({t,tone}));seatTurn((t,tone)=>H.news.push({t,tone}));aiVassalTurn((t,tone)=>H.news.push({t,tone}));aiRiseTurn((t,tone)=>H.news.push({t,tone}));minorLandTurn((t,tone)=>H.news.push({t,tone}));minorGrowTurn((t,tone)=>H.news.push({t,tone}));recruitTurn((t,tone)=>H.news.push({t,tone}));landHungerTurn((t,tone)=>H.news.push({t,tone}));liegeCareTurn((t,tone)=>H.news.push({t,tone}));legitTurn((t,tone)=>H.news.push({t,tone}));heirTurn((t,tone)=>H.news.push({t,tone}));contestTurn((t,tone)=>H.news.push({t,tone}));fallTurn((t,tone)=>H.news.push({t,tone}));capSweep((t,tone)=>H.news.push({t,tone}));armyTurn((t,tone)=>H.news.push({t,tone}));allyTurn((t,tone)=>H.news.push({t,tone}));plotTurn((t,tone)=>H.news.push({t,tone}));enlistTurn((t,tone)=>H.news.push({t,tone}));mercsLeave(null,(t,tone)=>H.news.push({t,tone}));if(seasonOf(H.cycle+1)==='Spring')informantTurn((t,tone)=>H.news.push({t,tone}));if(seasonOf(H.cycle+1)==='Winter')bloodlineTurn((t,tone)=>H.news.push({t,tone}));settleTraining();H.news.forEach(n=>H.log.push({cycle:H.cycle,text:n.t,realm:1}));if(H.log.length>80)H.log=H.log.slice(-80);
   H.cycle++;H.ops.season=H.cycle;ensureMarket();H.ops.board=genBoard();planning=null;planTeam=[];leverage=null;render();
 }
 
@@ -4161,7 +4257,8 @@ function standingPanel(){if(H.fallen)return '';
     else swBtn=`<button class="sm danger" data-switch="go">${esc(swName)}</button> <button class="sm" data-switch="no">Not now</button>`}
   const notes=[].concat(bannerNote||[],greatNote||[],switchNote||[]);
   const pending=bannerAsk||greatAsk||switchAsk;
-  const open=!!(H.ui&&H.ui.folds&&H.ui.folds.standing)||pending||notes.length;
+  /* open or closed exactly as the player last left it (closed at first); it never opens by itself */
+  const open=!!(H.ui&&H.ui.folds&&H.ui.folds.standing===true);
   const fx0=hz?'Settling: raids pay as a house’s, lands pay full income, levies cost 10 and 2 a season, Dread is called influence again, and any tribute ends. Sworn hordes leave your banner unless bound by marriage.'
     :'Falling: raids pay double, lands pay half, levies cost 5 and 1 a season (2 more allowed, −1 defending holds), influence becomes Dread, and you may demand tribute. Great houses that shun hordes cut trade, pacts and marriage ties. Sworn houses leave unless bound by marriage.';
   const fx=fx0+' Falling from grace: a great or minor house or horde that is beaten and made to step down, or loses its seat to a siege, becomes an outlaw company again, keeping family, companions, gold, influence and levies.';
@@ -5277,7 +5374,18 @@ function foundSeventhAI(x,say){
   if(H.map&&H.map.hexes){const own=H.map.hexes.filter(h=>h.h===oldKey);carveProvince(oldKey,'r:'+r.rid,own[0])}
   H.realm.seventh={by:r.name,cycle:H.cycle};
   say(`House ${r.name} rises to stand among the great houses: the seventh great house of the realm, seated at ${r.seat}, its province carved from the Borderlands.`,'warn')}
+/* a seatless minor house (not your bannerman) whose hold has grown to Estate tier makes it its new seat */
+const MT_ESTATE=5;
+function reseatTurn(say){
+  (H.minors||[]).filter(x=>!x.estate&&x.liege!==YOU&&(x.holds||[]).some(h=>h.t>=MT_ESTATE)).forEach(x=>{
+    const i=x.holds.findIndex(h=>h.t>=MT_ESTATE);x.holds.splice(i,1);
+    const used=new Set((H.minors||[]).filter(z=>z.estate).map(z=>z.estate.name).concat(H.lands.map(l=>l.name)));let nm,k=0;do{nm=pick(LAND_A)+pick(LAND_B)}while(used.has(nm)&&++k<40);
+    x.estate={name:nm};x.landless=false;
+    say(`House ${x.name} raises its new seat at ${nm} Estate${x.liege?`, as a bannerman of House ${x.liege}`:', sworn to no one'}.`,'');
+  });
+}
 function aiRiseTurn(say){
+  reseatTurn(say);
   (H.minors||[]).filter(x=>!x.liege&&!x.rebel&&x.estate).forEach(x=>{
     if((x.power||1)<3&&Math.random()<IND_LEVY){x.power=(x.power||1)+1;say(`House ${x.name}, independent, musters new levies (strength ${x.power}).`,'')}
     if(mN(x)>=IND_WANT&&mN(x)<IND_GROW&&mN(x)<HOLD_CAP&&Math.random()<IND_SETTLE)mAdd(x,MT_WILD)});
@@ -5759,9 +5867,9 @@ function courtSpendHtml(){
       ${Object.entries(FEASTS).map(([k,F])=>`<button class="sm" style="margin:0" data-feast="${k}" ${H.gold>=F.cost?'':'disabled'}>${F.label} · ${F.cost} gold</button>`).join('')}</div>
       <p class="muted" style="font-size:15px;margin:8px 0 0">Every house not at war with you attends: tension with each falls by 1. A modest feast brings +1 influence and a 1 in 5 chance of a marriage offer; a grand one +2 influence and a 2 in 5 chance. The host rolls Insight: success brings +1 influence more${Rz.king&&!Rz.yours?' (or +1 royal favor at a grand feast)':''}; a 10 brings a scandal or a poisoning. The host is busy for the season.</p>`
     :'<p class="muted" style="margin:0">No one of age is free to host this season.</p>';
-  if(!crownOn())return `${last}<h3>Feasts</h3>${feast}`;
+  if(!crownOn())return `${last}<h3>Feasts</h3>${feast}${carouseHtml()}`;
   return `${last}${bribeHtml}<h3>Royal actions</h3><p class="muted" style="font-size:15px;margin:0 0 8px">${Rz.yours?(freeDecree()?`You hold the throne: your first decree this year is free. After that, each costs royal favor (you have ${fav}), which returns at 1 a season.`:`You hold the throne. This year’s free decree is spent; more cost royal favor (you have ${fav}), which returns at 1 a season.`):Rz.king?`Spend royal favor (you have ${fav}) to bend the crown’s decrees to your aims.`:'The throne is empty. No decrees can be bought until a monarch is crowned.'}</p><ul class="offices">${acts}</ul>
-    <h3>Feasts</h3>${feast}`;
+    <h3>Feasts</h3>${feast}${carouseHtml()}`;
 }
 function calm(n){const r=rival(n);if(!r||H.influence<2||!r.hostility)return;H.influence-=2;r.hostility--;H.log.push({cycle:H.cycle,text:`Gifts and kind words ease tensions with House ${n}.`});render()}
 function petition(){if(H.influence<3||H.realm.favor>=10||H.realm.yours||!H.realm.king)return;H.influence-=3;H.realm.favor++;H.log.push({cycle:H.cycle,text:'You petition the crown and win royal favor.'});render()}
@@ -6132,7 +6240,7 @@ function realmViewInner(){
   const detail=`<section class="pane fold "><details data-fold="houses" ${foldOpen('houses')?'open':''}><summary><h2>Major Houses</h2></summary><div class="foldbody"><div class="hgrid">${houses}</div></div></details></section>`;
   const P=(l,f)=>realmSafe(l,f);
   return `${P('The Map',mapPanel)}${detail}${P('Contested seats',contestPanel)}${P('Minor houses',minorsPanel)}${P('Outlaws',banditsPanel)}${crisis}${P('Envoys',envoyPanel)}${P('Treaties',treatyPanel)}${P('Dissolved houses',minorDissPanel)}${P('War & alliances',diploView)}${crownOn()?`<div class="two">${crown}${court}</div>`:''}
-    <section class="pane fold dip"><details data-fold="largesse" ${foldOpen('largesse')?'open':''}><summary><h2>${crownOn()?'Largesse &amp; royal decrees':'Largesse'}</h2><span class="muted">${H.gold} gold${crownOn()?' · favor '+H.realm.favor:''}</span></summary><div class="foldbody">${realmSafe('Largesse',courtSpendHtml)}</div></details></section>
+    <section class="pane fold dip"><details data-fold="largesse" ${foldOpen('largesse')?'open':''}><summary><h2>${crownOn()?'Feasts &amp; royal decrees':'Feasts'}</h2><span class="muted">${H.gold} gold${crownOn()?' · favor '+H.realm.favor:''}</span></summary><div class="foldbody">${realmSafe('Feasts',courtSpendHtml)}</div></details></section>
     <section class="pane fold"><details data-fold="rank" ${foldOpen('rank')?'open':''}><summary><h2>Power rankings</h2></summary><div class="foldbody">${realmSafe('Power rankings',rankingsTable)}</div></details></section>
     <section class="pane fold "><details data-fold="relations" ${foldOpen('relations')?'open':''}><summary><h2>Your house and the great houses</h2></summary><div class="foldbody"><p class="muted" style="font-size:15px;margin:0 0 10px">Tension rises when you attack or are caught scheming, and cools with time, gifts and treaties. A house that is not held in check by a treaty, a marriage or a ward may strike at you between seasons.</p>${realmSafe('Relations',relationsOverview)}</div></details></section>`;
 }
@@ -6149,7 +6257,7 @@ function lineOfSuccession(){
   const r=H.members.find(m=>m.ruler&&!m.dead);
   const pool=living().filter(m=>m.origin==='born'&&!m.bastard&&m!==r);
   const rank=m=>r&&descends(m,r.id)?0:1;
-  const line=pool.sort((a,b)=>rank(a)-rank(b)||b.age-a.age);
+  const line=pool.sort((a,b)=>(a.baseborn?1:0)-(b.baseborn?1:0)||rank(a)-rank(b)||b.age-a.age);
   const n=namedHeir();if(n&&n!==r)return [n].concat(line.filter(m=>m!==n));
   return line;
 }
@@ -6575,7 +6683,7 @@ function bloodView(){
       <ul class="offices">${Object.entries(RETURN_OPTS).map(([k,[l,ty,d]])=>`<li><span style="flex:1;min-width:0">${ty?`<span class="optype t-${ty}" style="font-size:11px">${ty}</span>`:''}<b>${l}</b><br><span class="muted" style="font-size:15px">${esc(d.split('{H}').join(m.hostage))}</span></span><button class="sm${k==='keep'?' danger':''}" data-return="${m.id}|${k}">${k==='keep'?'Keep':'Choose'}</button></li>`).join('')}</ul></article>`).join('')}</div></section>`:'';
   return `${dueHtml}${yearsPane()}<div class="two">${succ}<section class="pane"><h2>Hostage wards</h2><p class="muted" style="font-size:15px;margin:0 0 10px">A ward taken from a rival lives as one of your house. While they live with you, their family will not strike at you. When they come of age you decide whether to send them home, and on what terms.</p>
       ${wards.length?`<ul class="offices">${wards.map(w=>`<li>${portrait(w,48)}<span style="flex:1;min-width:0"><button class="linkish" data-sel="${w.id}" data-go="house">${esc(w.given)}</button> <span class="muted">· ${w.age} · of House ${esc(w.hostage)}${w.returnDue?' · decision due':' · home at '+adultAge(w)}</span></span></li>`).join('')}</ul><h3>Claims</h3>`:''}${claims}${H.informants.length?`<h3>Spies placed</h3><ul class="offices">${H.informants.map(i=>`<li>${esc(i.name)} <span class="muted">· inside House ${esc(i.house)}</span></li>`).join('')}</ul>`:''}</section></div>
-    ${outsideMatchPane()}<section class="pane"><h2>Marriage offers</h2><p class="muted" style="font-size:15px;margin:0 0 10px">${isOutlaw()?'<b>No great house weds into an outlaw company.</b> ':''}Every match binds the houses: their hostility ends and they will not strike at you while it holds. Choose who weds whom. A plain suitor is free and comes with their dowry; finer suitors ask a dowry of you and bring more.</p><div class="hgrid">${offers}</div></section>
+    ${outsideMatchPane()}${enlistPane()}<section class="pane"><h2>Marriage offers</h2><p class="muted" style="font-size:15px;margin:0 0 10px">${isOutlaw()?'<b>No great house weds into an outlaw company.</b> ':''}Every match binds the houses: their hostility ends and they will not strike at you while it holds. Choose who weds whom. A plain suitor is free and comes with their dowry; finer suitors ask a dowry of you and bring more.</p><div class="hgrid">${offers}</div></section>
     ${claimsPane()}`;
 }
 
@@ -6836,6 +6944,7 @@ function passYears(n,stance,danger,steward){
       const g0=H.gold;armyTurn((t,tone)=>{if(tone==='bad')say(t,tone)});paid+=g0-H.gold;
       allyTurn(say);
       skipRealmSeason(say);
+      enlistTurn(say);
       if(needSteward()||(H.minors||[]).length){minorTurn((t,tone)=>/for its bannerman/.test(t)?0:say(t.replace(/ You could back the rebels with gold \(The Realm\)\./,'').replace(/ Answer (it )?in The Realm\.?/,'').replace(/ Quell them on the Operations board or treat with them in The Realm within \d+ seasons, or they break away[^.!]*\./,''),tone));if(steward)stewardTurn(steward,say)}
       if(s<3)H.cycle++;
     }
@@ -7105,8 +7214,6 @@ function marketView(){
     ${exchangePane()}
     <section class="pane fold"><details data-fold="armory" ${foldOpen('armory')?'open':''}><summary><h2>The armory</h2><span class="muted">${H.armory.length} item${H.armory.length===1?'':'s'}</span></summary><div class="foldbody"><p class="muted" style="font-size:15px;margin:0 0 10px">Items your house owns but nobody is using. Equip them here or from a member’s dossier. Selling returns half the price.</p>${arm}</div></details></section>
     <div class="two">${F('smith','Weaponsmith this season','',`<ul class="wares">${stock('weapon')}</ul>`)}${F('armorer','Armorer this season','',`<ul class="wares">${stock('armor')}</ul>`)}</div>
-    ${F('swords','Sellsword captains this season','Each fights in one operation, then leaves',`${(H.market.swords||[]).length?`<div class="suitors">${H.market.swords.map((c,i)=>`<div class="hcard" style="display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:4px 10px;align-items:center;padding:8px">${portrait(c,48)}<span style="min-width:0"><span class="sname">${esc(c.given)}<span class="tier">${SWORD_TIER[c.tier][0]}</span></span><span class="sline">${spOf(c).name} · ${c.age} · ${STATS.map(k=>`${k} ${c.st[k]}`).join(', ')}</span><span class="sline">${esc(c.gear.weapon)} (+${wVal(c.gear.weapon)}) · ${esc(c.gear.armor)} (+${aVal(c.gear.armor)} wounds)</span></span><button class="sm" style="margin:0" data-hire="${i}" ${H.gold>=swordPrice(c.tier)?'':'disabled'}>Hire · ${swordPrice(c.tier)} gold</button></div>`).join('')}</div>`:'<p class="muted" style="margin:0">All hired this season.</p>'}
-      ${H.members.some(m=>m.merc&&!m.dead)?`<p style="margin:10px 0 0;font-size:16px">In your pay: ${H.members.filter(m=>m.merc&&!m.dead).map(m=>esc(m.given)).join(', ')}. Choose them for any operation this season.</p>`:''}`)}
     <div class="two">${F('heir','Heirlooms this season','',`<ul class="wares">${stock('heirloom')}</ul>`)}${F('spec','Specialists this season','',`<ul class="wares">${stock('specialty')}</ul>`)}</div>
     ${tradeView()}`;
 }
@@ -7310,6 +7417,8 @@ document.addEventListener('click',e=>{
   if(t.dataset.gift){sendGift(t.dataset.gift);return}
   if(t.dataset.bribe){bribe();return}
   if(t.dataset.royal){const s=$('ra-'+t.dataset.royal),gl=$('ra-grantland');royalAct(t.dataset.royal,s?s.value:null,gl?gl.value:null);return}
+  if(t.dataset.recruit){const [a,b]=t.dataset.recruit.split('|');takeRecruit(+a,+b);render();return}
+  if(t.dataset.carouse){const s=$('carouser');if(s)carouse(+s.value);return}
   if(t.dataset.feast){const s=$('feasthost');if(s)holdFeast(t.dataset.feast,+s.value);return}
   if(t.dataset.envoy!=null){if(!t.dataset.envoy){envoy=null;render();return}const [k,n,a]=t.dataset.envoy.split('|');envoy={kind:k,house:n,against:a||null,who:null};pendingWar=null;render();const el=$('envoyPanel');if(el)el.scrollIntoView({behavior:'smooth',block:'start'});return}
   if(t.dataset.sendenvoy){sendEnvoy(+t.dataset.sendenvoy);return}
