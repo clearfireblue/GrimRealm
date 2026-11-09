@@ -2989,10 +2989,18 @@ function payOff(id){ensureDeals();const b=banditById(id);if(!b||paidOff(b))retur
   H.log.push({cycle:H.cycle,text:`Paid ${c} gold to ${b.name}: they leave your lands and your bannermen alone until ${seasonOf(H.cycle+DEAL_TERM)}, year ${yearOf(H.cycle+DEAL_TERM)}.${was?' Their war on you ends.':''}`})}
 function hireCo(id){ensureDeals();const b=banditById(id);if(!b||hiredCo()||coWarYou(b))return;const c=HIRE_PER*b.power;if(H.gold<c)return;H.gold-=c;H.hiredCo={id:b.id,until:H.cycle+DEAL_TERM};
   H.log.push({cycle:H.cycle,text:`Hired ${b.name} as sellswords for ${c} gold, until ${seasonOf(H.cycle+DEAL_TERM)}, year ${yearOf(H.cycle+DEAL_TERM)}.`})}
+/* back an outlaw company: +1 strength for 10 gold x the new strength (as a minor house's levies), once a season, never while it wars on you */
+const backCoCost=b=>10*((b.power||1)+1);
+function backCo(id){const b=banditById(id);if(!b||coWarYou(b)||(b.power||1)>=3||b.backedAt===H.cycle)return;const c=backCoCost(b);if(H.gold<c)return;
+  H.gold-=c;b.power++;b.backedAt=H.cycle;b.backed=true;H.log.push({cycle:H.cycle,text:`Quiet gold from House ${H.house.name}: ${c} gold buys ${b.name} new blades (strength ${b.power}).`})}
+function backCoBtn(b){if(coWarYou(b))return '';const p=b.power||1;
+  if(p>=3)return `<button class="sm" disabled title="They are as strong as an outlaw company gets">Back them · at full strength</button>`;
+  if(b.backedAt===H.cycle)return `<button class="sm" disabled>Backed this season</button>`;
+  const c=backCoCost(b);return `<button class="sm" data-co="back|${b.id}" ${H.gold>=c?'':'disabled'} title="Gold for new blades: strength ${p+1}. Once a season; no one need know">Back them · ${c} gold</button>`}
 function coActs(b){
   if(coWarYou(b)&&!paidOff(b))return `<span class="macts"><button class="sm" data-co="payoff|${b.id}" ${H.gold>=PAYOFF_PER*b.power?'':'disabled'}>Buy peace · ${PAYOFF_PER*b.power} gold</button></span>`;
   const h=hiredCo()===b;
-  return `<span class="macts">${paidOff(b)||h?'':`<button class="sm" data-co="payoff|${b.id}" ${H.gold>=PAYOFF_PER*b.power?'':'disabled'} title="They leave you and your bannermen alone for a year">Pay off · ${PAYOFF_PER*b.power} gold</button>`}${h||hiredCo()?'':`<button class="sm" data-co="hire|${b.id}" ${H.gold>=HIRE_PER*b.power?'':'disabled'} title="A year in your pay: they fight your wars, or settle unrest at peace">Hire · ${HIRE_PER*b.power} gold</button>`}</span>`;
+  return `<span class="macts">${paidOff(b)||h?'':`<button class="sm" data-co="payoff|${b.id}" ${H.gold>=PAYOFF_PER*b.power?'':'disabled'} title="They leave you and your bannermen alone for a year">Pay off · ${PAYOFF_PER*b.power} gold</button>`}${h||hiredCo()?'':`<button class="sm" data-co="hire|${b.id}" ${H.gold>=HIRE_PER*b.power?'':'disabled'} title="A year in your pay: they fight your wars, or settle unrest at peace">Hire · ${HIRE_PER*b.power} gold</button>`}${backCoBtn(b)}</span>`;
 }
 function coStatus(b){const t=[];
   if(coWarYou(b))t.push('<span class="status bad" style="font-size:10px;padding:1px 6px">At war with you</span>');
@@ -3070,11 +3078,12 @@ function goLegit(b,say){
   let name=companyHouseName(b);if(taken.has(name.toLowerCase()))name=minorName(pick(SPECIES_KEYS),taken);
   const x=newMinor(null,pick(AVELON_KEYS),true,taken);
   Object.assign(x,{name,sigil:b.mark,power:1,estate:{name:b.hold.name},landless:false,resentful:false,fromOutlaws:b.hold.house,holds:[]});
+  if(b.backed){x.grateful=true;x.backedBy=true;x.ties=(x.ties||[]).concat('Grateful: your house backed them in their outlaw days')}
   const n=Math.min(HOLD_CAP,banditLands(b));for(let i=0;i<n;i++)x.holds.push({t:MT_HAMLET});
   H.minors.push(x);
   H.owars=(H.owars||[]).filter(w=>!w.split('|').includes('o:'+b.id));H.coWars=(H.coWars||[]).filter(id=>id!==b.id);if(H.paidOff)delete H.paidOff[b.id];if(H.hiredCo&&H.hiredCo.id===b.id)H.hiredCo=null;
   H.bandits=H.bandits.filter(z=>z!==b);
-  say(`${cap1(b.name)} are outlaws no longer. Their captain takes ${b.hold.name} as an Estate and raises the banner of House ${name}, a minor house standing alone with ${n} land${n===1?'':'s'}.`,'warn');
+  say(`${cap1(b.name)} are outlaws no longer. Their captain takes ${b.hold.name} as an Estate and raises the banner of House ${name}, a minor house standing alone with ${n} land${n===1?'':'s'}.${b.backed?` They remember whose gold raised them, and are grateful to House ${H.house.name}.`:''}`,'warn');
 }
 function legitTurn(say){(H.bandits||[]).slice().forEach(b=>{if(b.power>=LEGIT_STR&&banditLands(b)>=LEGIT_LANDS)goLegit(b,say)})}
 /* ---------- falls and contested seats ---------- */
@@ -3192,7 +3201,7 @@ function banditsPanel(){
   const B=H.bandits||[];
   const tot=B.reduce((a,b)=>a+1+banditLands(b),0);
   return `<section class="pane fold minors"><details data-fold="outlaws" ${foldOpen('outlaws')?'open':''}><summary><h2>Outlaw companies</h2><span class="muted">${B.length} compan${B.length===1?'y':'ies'} · ${tot} land${tot===1?'':'s'} held</span></summary><div class="foldbody">
-    <p class="muted" style="font-size:15px;margin:0 0 10px">Bands of outlaws who answer to no lord. Each holds one stronghold in a great house’s lands and seizes more from that house (while it has 3 or more), its bannermen and independent houses; the stronger a company grows, the less often it strikes without a war; every land they hold is one a house has lost. Their strength is their blades: it grows as outlaws flock to them (more often the more land they hold, and after each victory). They war on great houses, minor houses and each other, and the houses they rob strike back; every war may come to blows each season. Whoever loses a battle gives up a land or a pip of strength, never both. A company with neither left to give has its stronghold stormed and is broken; every land it held goes back. Your dealings: pay a company off (5 gold a point of strength) to leave you and your bannermen alone for a year; hire one (8 gold a point) for a year to fight your wars, or at peace to settle a restless hold each season; strike one on the Summer and Fall boards; set one on a rival from the Winter board.</p>
+    <p class="muted" style="font-size:15px;margin:0 0 10px">Bands of outlaws who answer to no lord. Each holds one stronghold in a great house’s lands and seizes more from that house (while it has 3 or more), its bannermen and independent houses; the stronger a company grows, the less often it strikes without a war; every land they hold is one a house has lost. Their strength is their blades: it grows as outlaws flock to them (more often the more land they hold, and after each victory). They war on great houses, minor houses and each other, and the houses they rob strike back; every war may come to blows each season. Whoever loses a battle gives up a land or a pip of strength, never both. A company with neither left to give has its stronghold stormed and is broken; every land it held goes back. Your dealings: pay a company off (5 gold a point of strength) to leave you and your bannermen alone for a year; hire one (8 gold a point) for a year to fight your wars, or at peace to settle a restless hold each season; back one with gold for new blades (10 gold × the strength it rises to, once a season; never one at war with you); strike one on the Summer and Fall boards; set one on a rival from the Winter board.</p>
     ${B.length?`<ul>${B.map(banditLi).join('')}</ul>`:'<p class="muted" style="margin:0;font-size:15px">No outlaw company troubles the realm.</p>'}</div></details></section>`;
 }
 function minorLi(x){
@@ -7382,7 +7391,7 @@ document.addEventListener('click',e=>{
     render();return}
   if(t.dataset.seatclaim){const [n,id]=t.dataset.seatclaim.split('|');backClaimant(n,id);save();render();return}
   if(t.dataset.groupby){H.ui=H.ui||{};H.ui.groupBy=t.dataset.groupby;save();render();return}
-  if(t.dataset.co){const [k,id]=t.dataset.co.split('|');if(k==='payoff')payOff(id);else if(k==='hire')hireCo(id);save();render();return}
+  if(t.dataset.co){const [k,id]=t.dataset.co.split('|');if(k==='payoff')payOff(id);else if(k==='hire')hireCo(id);else if(k==='back')backCo(id);save();render();return}
   if(t.dataset.minor){const [k,id,a]=t.dataset.minor.split('|');minorAct(k,id,a);save();render();return}
   if(t.dataset.sel!=null){sel=+t.dataset.sel;if(t.dataset.go)section=t.dataset.go;lastRoll=null;render();if(t.dataset.go)window.scrollTo({top:0});return}
   if(t.dataset.sgopen){sigilEdit={kind:t.dataset.sgopen,name:t.dataset.sgname||null};render();return}
